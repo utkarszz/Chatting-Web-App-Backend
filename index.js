@@ -15,33 +15,47 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 /* =========================
-   1. CORS CONFIGURATION
+   1. DYNAMIC CORS CONFIG (Fixes the ERR_FAILED)
    ========================= */
-// Professional tip: Explicitly defining the origin is safer for Cookie handling
+const allowedOrigins = [
+  "https://chatting-web-app-frontend-three.vercel.app",
+  "http://localhost:5173", // For local development
+];
+
 const corsOptions = {
-  origin: "https://chatting-web-app-frontend-three.vercel.app", 
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or Postman)
+    if (!origin) return callback(null, true);
+    
+    // Check if origin is in our list OR is a Vercel preview URL
+    if (allowedOrigins.indexOf(origin) !== -1 || origin.endsWith(".vercel.app")) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
   methods: ["GET", "POST", "PUT", "DELETE"],
-  credentials: true, // Required to allow cookies to be sent back and forth
+  credentials: true, // Crucial for req.cookies
 };
 
 /* =========================
-   2. MIDDLEWARES (Order Matters!)
+   2. MIDDLEWARES
    ========================= */
 app.use(cors(corsOptions));
-app.use(cookieParser()); // Must be before routes to parse tokens for 'isAuthenticated'
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+app.use(cookieParser());
 
 /* =========================
    3. ROUTES
    ========================= */
+// Health check at root (helpful to verify if deployment is live)
+app.get("/", (req, res) => {
+  res.status(200).send("Backend Server is Live and Running!");
+});
+
 app.use("/api/v1/user", userRoutes);
 app.use("/api/v1/message", messageRoutes);
-
-// Health check route (Professional practice to check if backend is alive)
-app.get("/", (req, res) => {
-  res.status(200).json({ message: "Server is up and running!" });
-});
 
 /* =========================
    4. HTTP + SOCKET SERVER
@@ -50,7 +64,13 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "https://chatting-web-app-frontend-three.vercel.app",
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.indexOf(origin) !== -1 || origin.endsWith(".vercel.app")) {
+        callback(null, true);
+      } else {
+        callback(new Error("Socket CORS Error"));
+      }
+    },
     methods: ["GET", "POST"],
     credentials: true,
   },
@@ -62,21 +82,19 @@ const io = new Server(server, {
 const onlineUsers = new Map();
 
 io.on("connection", (socket) => {
-  // socket.handshake.query.userId allows you to get ID immediately on connect
   const userId = socket.handshake.query.userId;
   
-  if (userId) {
+  if (userId && userId !== "undefined") {
     onlineUsers.set(userId, socket.id);
-    console.log(`⚡ User Connected: ${userId} (Socket: ${socket.id})`);
+    console.log(`⚡ User Online: ${userId}`);
   }
 
-  // Update everyone on who is online
   io.emit("getOnlineUsers", Array.from(onlineUsers.keys()));
 
   socket.on("disconnect", () => {
     if (userId) {
       onlineUsers.delete(userId);
-      console.log(`❌ User Disconnected: ${userId}`);
+      console.log(`❌ User Offline: ${userId}`);
       io.emit("getOnlineUsers", Array.from(onlineUsers.keys()));
     }
   });
@@ -85,7 +103,6 @@ io.on("connection", (socket) => {
 /* =========================
    6. START SERVER
    ========================= */
-// We connect to DB first, then start the server for a clean boot
 const startServer = async () => {
   try {
     await connectDB();
@@ -93,14 +110,11 @@ const startServer = async () => {
       console.log(`🚀 Server running on port ${PORT}`);
     });
   } catch (error) {
-    console.error("Failed to connect to DB:", error);
-    process.exit(1); // Exit process with failure
+    console.error("DB Connection Failed:", error);
+    process.exit(1);
   }
 };
 
 startServer();
 
-/* =========================
-   7. EXPORT SOCKET
-   ========================= */
 setSocket(io);
